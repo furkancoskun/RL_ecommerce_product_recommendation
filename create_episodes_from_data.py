@@ -1,7 +1,11 @@
 import pandas as pd
+from sklearn.model_selection import train_test_split
+from collections import defaultdict
+import numpy as np
+from d3rlpy.dataset import Episode
 
 # PART-1 
-input_filename = 'ecommerce_clickstream_transactions_filtered.csv'
+input_filename = 'data/ecommerce_clickstream_transactions_filtered.csv'
 df = pd.read_csv(input_filename)
 
 # Convert Timestamp to datetime objects if not already
@@ -45,57 +49,88 @@ reward_map = {
 
 
 # PART-5:  Extract Transitions (Create the MDP dataset)
-transitions = []
-# Group by user and session
+print("Grouping transitions by session...")
+sessions_data = defaultdict(list)
 grouped = df.groupby(['UserIndex', 'SessionID'])
 
 for (user_idx, session_id), session_df in grouped:
-    # Sort again just to be absolutely sure (should be redundant if Step 1 was done right)
+    session_key = (user_idx, session_id)
+    # Sort within the group just to be safe
     session_df = session_df.sort_values(by='Timestamp')
-    
-    # Initialize the 'last' state variables for the start of the session
+
     last_product_idx = product_id_map['START']
     last_event_type_idx = event_type_map['START']
-    
+
     for i in range(len(session_df)):
         current_event = session_df.iloc[i]
-        
-        # State (s_t): Based on the *previous* event (or START)
         state = (user_idx, last_product_idx, last_event_type_idx)
-        
-        # Action (a_t): The product interacted with in the *current* event
-        # In offline RL, the logged action is what the user *did*
         action = current_event['ProductIndex']
-        
-        # Reward (r_t): Based on the *current* event's type
         reward = reward_map[current_event['EventType']]
-        
-        # Next State (s_{t+1}): Based on the *current* event
         next_state = (user_idx, current_event['ProductIndex'], current_event['EventTypeIndex'])
-        
-        # Done flag: Is this the last event in the session?
         done = (i == len(session_df) - 1)
-        
-        # Store the transition
-        transitions.append({
-            'state': state,
-            'action': action,
-            'reward': reward,
-            'next_state': next_state,
-            'done': done,
-            # Store original IDs too for potential debugging/analysis
-            'user_id': current_event['UserID'],
-            'product_id': current_event['ProductID'],
-            'event_type': current_event['EventType'],
-            'timestamp': current_event['Timestamp']
-        })
-        
-        # Update 'last' variables for the next iteration
+
+        transition = {
+            'state': np.array(state, dtype=np.float32), # Use numpy arrays early
+            'action': np.array(action, dtype=np.int32),
+            'reward': np.array(reward, dtype=np.float32),
+            'next_state': np.array(next_state, dtype=np.float32),
+            'terminal': np.array(float(done), dtype=np.float32) # Use 'terminal' often expected by libs
+            # Keep other info if needed for debugging, but not for RL training state/action/reward
+            # 'user_id': current_event['UserID'],
+            # 'product_id': current_event['ProductID'],
+        }
+        sessions_data[session_key].append(transition)
+
         last_product_idx = current_event['ProductIndex']
         last_event_type_idx = current_event['EventTypeIndex']
 
-print(f"Extracted {len(transitions)} transitions.")
-# Example: View the first few transitions
-print(transitions[:3])
+print(f"Grouped data into {len(sessions_data)} sessions.")
 
+# PART-5: Split into Train/Test
+# Get unique session keys and corresponding user indices for stratification
+session_keys = list(sessions_data.keys())
+user_indices_for_stratification = [key[0] for key in session_keys] # Extract UserIndex from key
 
+test_size = 0.05 # e.g., 5% for testing
+random_state = 42 # for reproducibility
+
+print(f"Splitting sessions into train/test ({1-test_size:.0%}/{test_size:.0%})...")
+train_session_keys, test_session_keys = train_test_split(
+    session_keys,
+    test_size=test_size,
+    # stratify=user_indices_for_stratification, # Stratify by UserIndex
+    random_state=random_state,
+
+)
+
+print(f"Training sessions: {len(train_session_keys)}")
+print(f"Test sessions: {len(test_session_keys)}")
+
+# --- Step 6: Create Final Datasets (e.g., for d3rlpy) ---
+def create_episode_list(session_keys, all_sessions_data):
+    """Helper function to create a list of d3rlpy Episode objects."""
+    episodes = []
+    for key in session_keys:
+        transitions = all_sessions_data[key]
+        if not transitions: # Skip empty sessions if any
+             continue
+        # Stack data from transitions within the episode
+        observations = np.array([t['state'] for t in transitions])
+        actions = np.array([t['action'] for t in transitions])
+        rewards = np.array([t['reward'] for t in transitions])
+        # Terminals are implicitly handled by the end of the episode sequence in d3rlpy Episode
+
+        episode = Episode(
+            observations=observations,
+            actions=actions,
+            rewards=rewards
+            # d3rlpy automatically infers terminals from sequence length
+        )
+        episodes.append(episode)
+    return episodes
+
+print("Creating train dataset episodes...")
+train_episodes = create_episode_list(train_session_keys, sessions_data)
+
+print("Creating test dataset episodes...")
+test_episodes = create_episode_list(test_session_keys, sessions_data)
