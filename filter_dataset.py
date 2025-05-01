@@ -1,7 +1,7 @@
 import pandas as pd
 
-input_filename = 'ecommerce_clickstream_transactions.csv'
-output_filename = 'ecommerce_clickstream_transactions_filtered.csv'
+input_filename = 'data/ecommerce_clickstream_transactions.csv'
+output_filename = 'data/ecommerce_clickstream_transactions_filtered.csv'
 events_to_remove = ['page_view', 'login', 'logout', 'click']
 
 try:
