@@ -2,10 +2,14 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
 import numpy as np
-from d3rlpy.dataset import Episode
+from d3rlpy.dataset import Episode, MDPDataset
+import os
+import pickle
 
 # PART-1 
 input_filename = 'data/ecommerce_clickstream_transactions_filtered.csv'
+save_dir = "data/"
+os.makedirs(save_dir, exist_ok=True)
 df = pd.read_csv(input_filename)
 
 # Convert Timestamp to datetime objects if not already
@@ -70,14 +74,11 @@ for (user_idx, session_id), session_df in grouped:
         done = (i == len(session_df) - 1)
 
         transition = {
-            'state': np.array(state, dtype=np.float32), # Use numpy arrays early
+            'state': np.array(state, dtype=np.float32), 
             'action': np.array(action, dtype=np.int32),
             'reward': np.array(reward, dtype=np.float32),
             'next_state': np.array(next_state, dtype=np.float32),
-            'terminal': np.array(float(done), dtype=np.float32) # Use 'terminal' often expected by libs
-            # Keep other info if needed for debugging, but not for RL training state/action/reward
-            # 'user_id': current_event['UserID'],
-            # 'product_id': current_event['ProductID'],
+            'terminal': np.array(float(done), dtype=np.float32) 
         }
         sessions_data[session_key].append(transition)
 
@@ -88,7 +89,6 @@ print(f"Grouped data into {len(sessions_data)} sessions.")
 
 
 # PART-5: Split into Train/Test
-# Get unique session keys and corresponding user indices for stratification
 session_keys = list(sessions_data.keys())
 # user_indices_for_stratification = [key[0] for key in session_keys] # Extract UserIndex from key
 
@@ -113,18 +113,15 @@ def create_episode_list(session_keys, all_sessions_data):
     """Helper function to create a list of Episode objects."""
     episodes = []
     for key in session_keys:
-        transitions = all_sessions_data.get(key) # Use .get for safety
-        if not transitions: # Skip empty or non-existent sessions
+        transitions = all_sessions_data.get(key)
+        if not transitions: # Check if transitions exist for the session key
              print(f"Warning: Session key {key} not found or empty in sessions_data.")
              continue
 
-        # Stack data from transitions within the episode
-        # Ensure consistency in data types
         observations = np.array([t['state'] for t in transitions], dtype=np.float32)
         actions = np.array([t['action'] for t in transitions], dtype=np.int32) # Actions are discrete indices
         rewards = np.array([t['reward'] for t in transitions], dtype=np.float32)
 
-        # --- FIX: Create the 'terminated' array ---
         n_steps = len(observations)
         if n_steps == 0: # Handle cases where session might exist but have 0 valid transitions processed
             print(f"Warning: Session key {key} resulted in 0 transitions.")
@@ -133,22 +130,18 @@ def create_episode_list(session_keys, all_sessions_data):
         # Create terminated flags: 0.0 for non-terminal, 1.0 for the last step
         terminated = np.zeros(n_steps, dtype=np.float32)
         terminated[-1] = 1.0 # Mark the very last step as terminal for the episode
-        # ------------------------------------------
 
         try:
             episode = Episode(
                 observations=observations,
                 actions=actions,
                 rewards=rewards,
-                terminated=terminated # Pass the newly created array
-                # Note: Some libraries might use 'terminals' instead of 'terminated'
-                # Check the exact signature of d3rlpy.dataset.Episode if unsure
+                terminated=terminated
             )
             episodes.append(episode)
         except TypeError as e:
             print(f"Error creating Episode for key {key}: {e}")
-            # Optionally print shapes for debugging:
-            # print(f"Shapes: obs={observations.shape}, act={actions.shape}, rew={rewards.shape}, term={terminated.shape}")
+            print(f"Shapes: obs={observations.shape}, act={actions.shape}, rew={rewards.shape}, term={terminated.shape}")
         except Exception as e:
              print(f"Unexpected error for key {key}: {e}")
     return episodes
@@ -158,3 +151,32 @@ train_episodes = create_episode_list(train_session_keys, sessions_data)
 
 print("Creating test dataset episodes...")
 test_episodes = create_episode_list(test_session_keys, sessions_data)
+
+
+# --- Step 7: Save the episodes ---
+train_episodes_path_pkl = os.path.join(save_dir, "train_episodes.pkl")
+test_episodes_path_pkl = os.path.join(save_dir, "test_episodes.pkl")
+
+# Save training episodes
+if train_episodes: # Check if the list is not empty
+    print(f"Saving training episodes ({len(train_episodes)} episodes) to {train_episodes_path_pkl} using pickle...")
+    try:
+        with open(train_episodes_path_pkl, 'wb') as f:
+            pickle.dump(train_episodes, f)
+        print("Training episodes saved successfully (pickle).")
+    except Exception as e:
+        print(f"Error saving training episodes with pickle: {e}")
+else:
+    print("Skipping saving of training episodes as the list is empty.")
+
+# Save test episodes
+if test_episodes: # Check if the list is not empty
+    print(f"Saving test episodes ({len(test_episodes)} episodes) to {test_episodes_path_pkl} using pickle...")
+    try:
+        with open(test_episodes_path_pkl, 'wb') as f:
+            pickle.dump(test_episodes, f)
+        print("Test episodes saved successfully (pickle).")
+    except Exception as e:
+        print(f"Error saving test episodes with pickle: {e}")
+else:
+    print("Skipping saving of test episodes as the list is empty.")
